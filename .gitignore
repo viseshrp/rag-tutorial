@@ -180,3 +180,4 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 world-history-text.pdf
+.claude/settings.local.json
