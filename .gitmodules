@@ -1,0 +1,3 @@
+[submodule "vendor/rag_tutorial"]
+	path = vendor/rag_tutorial
+	url = https://github.com/ismichel/rag_tutorial.git
