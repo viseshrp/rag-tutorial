@@ -9,9 +9,11 @@ This cheat sheet is intentionally limited to the scope of the PyCon US 2026 tuto
 
 The code examples below use a practical stack inferred from that scope:
 
-- `pypdf` for PDF text extraction
+- `PyMuPDF` for PDF text extraction
+- `spaCy` for sentence splitting
 - `sentence-transformers` for embeddings
 - `numpy` for similarity and ranking
+- `torch` for tensor search and top-k retrieval
 - `transformers` for local text generation
 
 ## 1. The Mental Model
@@ -94,6 +96,11 @@ Interpretation:
 - around `0.0`: unrelated
 - below `0.0`: opposite direction, usually not useful here
 
+Tutorial note:
+
+- the upstream notebook often uses dot product for ranking because normalized embeddings make dot product and cosine behave very similarly
+- the underlying retrieval idea is still the same: compare vectors and rank the closest ones
+
 ### Top-k retrieval
 
 Pick the `k` highest-scoring chunks.
@@ -143,10 +150,10 @@ That is enough for a real beginner RAG prototype.
 ### Read text from the PDF
 
 ```python
-from pypdf import PdfReader
+import pymupdf as fitz
 
-reader = PdfReader("world-history-text.pdf")
-pages = [page.extract_text() or "" for page in reader.pages]
+doc = fitz.open("world-history-text.pdf")
+pages = [page.get_text("text", sort=True) for page in doc]
 text = "\n".join(pages)
 
 print(text[:500])
@@ -154,8 +161,10 @@ print(text[:500])
 
 What to know:
 
-- `extract_text()` can return `None`, so `or ""` is a useful guard.
+- `page.get_text("text")` extracts plain text from each page.
+- `sort=True` can improve reading order by sorting text top-left to bottom-right.
 - PDF extraction is often messy. Broken spacing and line breaks are normal.
+- `PyMuPDF` is the installed package; many tutorials still refer to it as `fitz`.
 
 ### Clean text a little
 
@@ -177,35 +186,42 @@ What to know:
 
 ### Split text into chunks
 
-Start simple. Character-based chunking is fine for a tutorial.
+The upstream notebook uses sentence-based chunking with spaCy, then groups several sentences together.
 
 ```python
-def chunk_text(text: str, chunk_size: int = 800, overlap: int = 120) -> list[str]:
-    chunks = []
-    step = chunk_size - overlap
+from spacy.lang.en import English
 
-    for start in range(0, len(text), step):
-        chunk = text[start:start + chunk_size].strip()
+nlp = English()
+nlp.add_pipe("sentencizer")
+
+doc = nlp(text)
+sentences = [str(sent).strip() for sent in doc.sents if str(sent).strip()]
+
+def chunk_sentences(sentences: list[str], sentences_per_chunk: int = 10) -> list[str]:
+    chunks = []
+
+    for i in range(0, len(sentences), sentences_per_chunk):
+        chunk = " ".join(sentences[i:i + sentences_per_chunk]).strip()
         if chunk:
             chunks.append(chunk)
 
     return chunks
 
-chunks = chunk_text(text)
+chunks = chunk_sentences(sentences, sentences_per_chunk=10)
 print(len(chunks))
 print(chunks[0][:200])
 ```
 
 What to know:
 
-- `chunk_size` too small: retrieval becomes noisy
-- `chunk_size` too large: retrieval becomes vague
-- `overlap` helps preserve context across chunk boundaries
+- sentence-based chunks are often easier to reason about than raw character windows
+- too few sentences per chunk can lose context
+- too many sentences per chunk can make retrieval broad and noisy
 
 Reasonable beginner defaults:
 
-- `chunk_size`: `500` to `1000` characters
-- `overlap`: `50` to `150` characters
+- `5` to `10` sentences per chunk for a first pass
+- experiment after you inspect retrieval quality
 
 ### Turn chunks into embeddings
 
@@ -237,19 +253,18 @@ What to know:
 ### Rank chunks with cosine similarity
 
 ```python
-import numpy as np
+import torch
 
-def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
-    return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))
+chunk_tensor = torch.tensor(chunk_vectors, dtype=torch.float32)
+query_tensor = torch.tensor(query_vector, dtype=torch.float32)
 
-scores = np.array([cosine_similarity(query_vector, vec) for vec in chunk_vectors])
+scores = torch.matmul(chunk_tensor, query_tensor)
 top_k = 3
-top_ids = scores.argsort()[-top_k:][::-1]
+top_scores, top_ids = torch.topk(scores, k=top_k)
 
-retrieved_chunks = [chunks[i] for i in top_ids]
-retrieved_scores = [float(scores[i]) for i in top_ids]
+retrieved_chunks = [chunks[i] for i in top_ids.tolist()]
 
-for score, chunk in zip(retrieved_scores, retrieved_chunks):
+for score, chunk in zip(top_scores.tolist(), retrieved_chunks):
     print(score)
     print(chunk[:200], "\n")
 ```
@@ -257,6 +272,7 @@ for score, chunk in zip(retrieved_scores, retrieved_chunks):
 What to know:
 
 - retrieval is just ranking by score
+- the upstream notebook uses `torch.topk` to get the best matches
 - inspect the retrieved chunks before blaming the LLM
 - bad retrieval usually causes bad answers
 
@@ -480,11 +496,13 @@ If you can build the small baseline first, those become much easier later.
 
 ## 11. Minimal Install Hint
 
-This repo does not currently include a full dependency file, but the examples here assume something like:
+This repo now includes a [`pyproject.toml`](./pyproject.toml) and `uv.lock`.
+
+The shortest setup path is:
 
 ```powershell
-pip install pypdf sentence-transformers transformers torch numpy
-python .drive-setup\setup.py
+uv sync --extra notebook
+uv run python .drive-setup\setup.py
 ```
 
 The setup script downloads the PDF and model assets used by this repo.
